@@ -1,4 +1,4 @@
-from speech import SpeechToText
+from speech import SpeechToText, TextToSpeech
 from vad import vad
 from ai import ChatAI
 
@@ -13,4 +13,8 @@ audio = vad()
 sm.transcribe()
 
 response = ai.get_response(sm.final_transcript)
-print(response)
+
+tts = TextToSpeech()
+
+tts.generate_audio_file(response)
+tts.play_audio()

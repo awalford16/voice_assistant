@@ -2,6 +2,9 @@ import speechmatics
 import ssl
 from httpx import HTTPStatusError
 import os
+from gtts import gTTS
+from pygame import mixer
+import time
 
 API_KEY = os.environ.get("SM_API_TOKEN")
 PATH_TO_FILE = "./recording.wav"
@@ -70,3 +73,18 @@ class SpeechToText:
                 else:
                     raise e
 
+class TextToSpeech:
+    def __init__(self):
+        self.audio_file_name = "speech.mp3"
+        mixer.init()
+
+    def generate_audio_file(self, msg):
+        tts = gTTS(text=msg, lang='en')
+        tts.save(self.audio_file_name)
+
+    def play_audio(self):
+        mixer.music.load(self.audio_file_name)
+        # mixer.music.set_speed(1.5)
+        mixer.music.play()
+        while mixer.music.get_busy():  # wait for music to finish playing
+            time.sleep(1)
