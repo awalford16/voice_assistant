@@ -30,124 +30,130 @@ NUM_WINDOW_CHUNKS_END = NUM_WINDOW_CHUNKS * 2
 
 START_OFFSET = int(NUM_WINDOW_CHUNKS * CHUNK_DURATION_MS * 0.5 * RATE)
 
-got_a_sentence = False
-leave = False
+
+class VAD:
+    def __init__(self):
+        self.got_a_sentence = False
+        self.leave = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_tb):
+        self.got_a_sentence = False
+        self.leave = False
+
+    def handle_int(self, sig, chunk):
+        self.leave = True
+        self.got_a_sentence = True
 
 
-def handle_int(sig, chunk):
-    global leave, got_a_sentence
-    leave = True
-    got_a_sentence = True
+    def record_to_file(self, path, data, sample_width):
+        "Records from the microphone and outputs the resulting data to 'path'"
+        # sample_width, data = record()
+        data = pack('<' + ('h' * len(data)), *data)
+        wf = wave.open(path, 'wb')
+        wf.setnchannels(1)
+        wf.setsampwidth(sample_width)
+        wf.setframerate(RATE)
+        wf.writeframes(data)
+        wf.close()
 
 
-def record_to_file(path, data, sample_width):
-    "Records from the microphone and outputs the resulting data to 'path'"
-    # sample_width, data = record()
-    data = pack('<' + ('h' * len(data)), *data)
-    wf = wave.open(path, 'wb')
-    wf.setnchannels(1)
-    wf.setsampwidth(sample_width)
-    wf.setframerate(RATE)
-    wf.writeframes(data)
-    wf.close()
+    def normalize(self, snd_data):
+        "Average the volume out"
+        MAXIMUM = 32767  # 16384
+        times = float(MAXIMUM) / max(abs(i) for i in snd_data)
+        r = array('h')
+        for i in snd_data:
+            r.append(int(i * times))
+        return r
 
 
-def normalize(snd_data):
-    "Average the volume out"
-    MAXIMUM = 32767  # 16384
-    times = float(MAXIMUM) / max(abs(i) for i in snd_data)
-    r = array('h')
-    for i in snd_data:
-        r.append(int(i * times))
-    return r
+    def vad(self):
+        vad = webrtcvad.Vad(3)
 
+        pa = pyaudio.PyAudio()
+        stream = pa.open(format=FORMAT,
+                        channels=CHANNELS,
+                        rate=RATE,
+                        input=True,
+                        start=False,
+                        frames_per_buffer=CHUNK_SIZE)
 
-def vad():
-    global leave, got_a_sentence
+        signal.signal(signal.SIGINT, self.handle_int)
+        while not self.leave:
+            ring_buffer = collections.deque(maxlen=NUM_PADDING_CHUNKS)
+            triggered = False
+            voiced_frames = []
+            ring_buffer_flags = [0] * NUM_WINDOW_CHUNKS
+            ring_buffer_index = 0
 
-    vad = webrtcvad.Vad(3)
+            ring_buffer_flags_end = [0] * NUM_WINDOW_CHUNKS_END
+            ring_buffer_index_end = 0
+            buffer_in = ''
+            # WangS
+            raw_data = array('h')
+            index = 0
+            start_point = 0
+            StartTime = time.time()
+            print("* recording: ")
+            stream.start_stream()
 
-    pa = pyaudio.PyAudio()
-    stream = pa.open(format=FORMAT,
-                    channels=CHANNELS,
-                    rate=RATE,
-                    input=True,
-                    start=False,
-                    frames_per_buffer=CHUNK_SIZE)
+            while not self.got_a_sentence and not self.leave:
+                chunk = stream.read(CHUNK_SIZE)
+                # add WangS
+                raw_data.extend(array('h', chunk))
+                index += CHUNK_SIZE
+                TimeUse = time.time() - StartTime
 
-    signal.signal(signal.SIGINT, handle_int)
-    while not leave:
-        ring_buffer = collections.deque(maxlen=NUM_PADDING_CHUNKS)
-        triggered = False
-        voiced_frames = []
-        ring_buffer_flags = [0] * NUM_WINDOW_CHUNKS
-        ring_buffer_index = 0
+                active = vad.is_speech(chunk, RATE)
 
-        ring_buffer_flags_end = [0] * NUM_WINDOW_CHUNKS_END
-        ring_buffer_index_end = 0
-        buffer_in = ''
-        # WangS
-        raw_data = array('h')
-        index = 0
-        start_point = 0
-        StartTime = time.time()
-        print("* recording: ")
-        stream.start_stream()
+                sys.stdout.write('1' if active else '_')
+                ring_buffer_flags[ring_buffer_index] = 1 if active else 0
+                ring_buffer_index += 1
+                ring_buffer_index %= NUM_WINDOW_CHUNKS
 
-        while not got_a_sentence and not leave:
-            chunk = stream.read(CHUNK_SIZE)
-            # add WangS
-            raw_data.extend(array('h', chunk))
-            index += CHUNK_SIZE
-            TimeUse = time.time() - StartTime
+                ring_buffer_flags_end[ring_buffer_index_end] = 1 if active else 0
+                ring_buffer_index_end += 1
+                ring_buffer_index_end %= NUM_WINDOW_CHUNKS_END
 
-            active = vad.is_speech(chunk, RATE)
+                # start point detection
+                if not triggered:
+                    ring_buffer.append(chunk)
+                    num_voiced = sum(ring_buffer_flags)
+                    if num_voiced > 0.8 * NUM_WINDOW_CHUNKS:
+                        sys.stdout.write(' Open ')
+                        triggered = True
+                        start_point = index - CHUNK_SIZE * 20  # start point
+                        # voiced_frames.extend(ring_buffer)
+                        ring_buffer.clear()
+                # end point detection
+                else:
+                    # voiced_frames.append(chunk)
+                    ring_buffer.append(chunk)
+                    num_unvoiced = NUM_WINDOW_CHUNKS_END - sum(ring_buffer_flags_end)
+                    if num_unvoiced > 0.90 * NUM_WINDOW_CHUNKS_END or TimeUse > 10:
+                        sys.stdout.write(' Close ')
+                        triggered = False
+                        self.got_a_sentence = True
 
-            sys.stdout.write('1' if active else '_')
-            ring_buffer_flags[ring_buffer_index] = 1 if active else 0
-            ring_buffer_index += 1
-            ring_buffer_index %= NUM_WINDOW_CHUNKS
+                sys.stdout.flush()
 
-            ring_buffer_flags_end[ring_buffer_index_end] = 1 if active else 0
-            ring_buffer_index_end += 1
-            ring_buffer_index_end %= NUM_WINDOW_CHUNKS_END
+            sys.stdout.write('\n')
+            # data = b''.join(voiced_frames)
 
-            # start point detection
-            if not triggered:
-                ring_buffer.append(chunk)
-                num_voiced = sum(ring_buffer_flags)
-                if num_voiced > 0.8 * NUM_WINDOW_CHUNKS:
-                    sys.stdout.write(' Open ')
-                    triggered = True
-                    start_point = index - CHUNK_SIZE * 20  # start point
-                    # voiced_frames.extend(ring_buffer)
-                    ring_buffer.clear()
-            # end point detection
-            else:
-                # voiced_frames.append(chunk)
-                ring_buffer.append(chunk)
-                num_unvoiced = NUM_WINDOW_CHUNKS_END - sum(ring_buffer_flags_end)
-                if num_unvoiced > 0.90 * NUM_WINDOW_CHUNKS_END or TimeUse > 10:
-                    sys.stdout.write(' Close ')
-                    triggered = False
-                    got_a_sentence = True
+            stream.stop_stream()
+            print("* done recording")
+            self.got_a_sentence = False
 
-            sys.stdout.flush()
+            # write to file
+            raw_data.reverse()
+            for index in range(start_point):
+                raw_data.pop()
+            raw_data.reverse()
+            raw_data = self.normalize(raw_data)
+            self.record_to_file("recording.wav", raw_data, 2)
+            self.leave = True
 
-        sys.stdout.write('\n')
-        # data = b''.join(voiced_frames)
-
-        stream.stop_stream()
-        print("* done recording")
-        got_a_sentence = False
-
-        # write to file
-        raw_data.reverse()
-        for index in range(start_point):
-            raw_data.pop()
-        raw_data.reverse()
-        raw_data = normalize(raw_data)
-        record_to_file("recording.wav", raw_data, 2)
-        leave = True
-
-    stream.close()
+        stream.close()

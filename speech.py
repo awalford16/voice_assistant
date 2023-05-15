@@ -51,6 +51,12 @@ class SpeechToText:
             max_delay=5,
         )
 
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_value, exc_tb):
+        self.final_transcript = ""
+
     # Define an event handler to print the partial transcript
     def print_partial_transcript(self, msg):
         pass

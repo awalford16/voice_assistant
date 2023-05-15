@@ -2,14 +2,12 @@
 import openai
 
 class ChatAI:
-    def __init__(self):
-        pass
+    def __init__(self, messages):
+        self.messages = messages
 
-    def get_response(self, msg):
+    def get_response(self):
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
-            messages=[
-                    {"role": "user", "content": msg}
-                ]
+            messages=self.messages
         )
         return response['choices'][0]['message']['content']
